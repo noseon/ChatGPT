@@ -267,11 +267,11 @@ class Chatbot:
             except json.decoder.JSONDecodeError:
                 log.exception("Error parsing JSON", stack_info=False)
                 continue
-            if not self.__check_fields(line):
+            #if not self.__check_fields(line):
                 #log.error("Field missing", exc_info=False)
-                if (line.get("details") == "Too many requests in 1 hour. Try again later."):
-                    #log.error("Rate limit exceeded", exc_info=False)
-                    #raise Error(source="ask", message=line.get("details"), code=2)
+            #if (line.get("details") == "Too many requests in 1 hour. Try again later."):
+                #log.error("Rate limit exceeded", exc_info=False)
+                #raise Error(source="ask", message=line.get("details"), code=2)
                 #raise Error(source="ask", message="Field missing", code=1)
 
             message = line["message"]["content"]["parts"][0]
