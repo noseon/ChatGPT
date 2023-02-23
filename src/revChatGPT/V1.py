@@ -84,7 +84,7 @@ class Chatbot:
     Chatbot class for ChatGPT
     """
 
-    @logger(is_timed=True)
+    @logger(is_timed=False)
     def __init__(
         self,
         config,
