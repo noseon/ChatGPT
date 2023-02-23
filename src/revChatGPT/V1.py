@@ -265,8 +265,9 @@ class Chatbot:
             try:
                 line = json.loads(line)
             except json.decoder.JSONDecodeError:
-                log.exception("Error parsing JSON", stack_info=False)
                 continue
+                #log.exception("Error parsing JSON", stack_info=False)
+                #continue
             #if not self.__check_fields(line):
                 #log.error("Field missing", exc_info=False)
             #if (line.get("details") == "Too many requests in 1 hour. Try again later."):
