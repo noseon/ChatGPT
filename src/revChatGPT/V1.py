@@ -467,7 +467,14 @@ def configure():
 @logger(is_timed=False)
 def main(config):
     print("Logging in...")
-    chatbot = Chatbot(config)
+    chatbot = Chatbot(
+        args.email,
+        args.password,
+        paid=args.paid,
+        proxy=args.proxy,
+        insecure=args.insecure_auth,
+        session_token=args.session_token,
+    )
     while True:
         prompt = get_input("\nYou:\n")
         if prompt.startswith("!"):
