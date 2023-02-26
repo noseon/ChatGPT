@@ -1,16 +1,21 @@
 """
 Standard ChatGPT
 """
+from __future__ import annotations
+
+import base64
 import json
 import logging
+import os
+import os.path as osp
 import time
 import uuid
 from functools import wraps
 from os import environ
 from os import getenv
-from os.path import exists
 
 import requests
+from httpx import AsyncClient
 from OpenAIAuth import Authenticator
 from OpenAIAuth import Error as AuthError
 
@@ -21,7 +26,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-def logger(is_timed):
+def logger(is_timed: bool):
     """
     Logger decorator
     """
@@ -30,7 +35,7 @@ def logger(is_timed):
         wraps(func)
 
         def wrapper(*args, **kwargs):
-            log.info(
+            log.debug(
                 "Entering %s with args %s and kwargs %s",
                 func.__name__,
                 args,
@@ -40,15 +45,15 @@ def logger(is_timed):
             out = func(*args, **kwargs)
             end = time.time()
             if is_timed:
-                log.info(
+                log.debug(
                     "Exiting %s with return value %s. Took %s seconds.",
                     func.__name__,
                     out,
                     end - start,
                 )
             else:
-                log.info("Exiting %s with return value %s", func.__name__, out)
-            # Return the return value
+                log.debug("Exiting %s with return value %s", func.__name__, out)
+
             return out
 
         return wrapper
@@ -60,23 +65,27 @@ BASE_URL = environ.get("CHATGPT_BASE_URL") or "https://chatgpt.duti.tech/"
 
 
 class Error(Exception):
-    """Base class for exceptions in this module.
-    # Error codes:
-    # -1: User error
-    # 0: Unknown error
-    # 1: Server error
-    # 2: Rate limit error
-    # 3: Invalid request error
+    """
+    Base class for exceptions in this module.
+    Error codes:
+    -1: User error
+    0: Unknown error
+    1: Server error
+    2: Rate limit error
+    3: Invalid request error
+    4: Expired access token error
+    5: Invalid access token error
     """
 
     source: str
     message: str
     code: int
 
-    def __init__(self, source: str = None, message: str = None, code: int = 0):
+    def __init__(self, source: str, message: str, code: int = 0):
         self.source = source
         self.message = message
         self.code = code
+        # Code
 
 
 class Chatbot:
@@ -87,41 +96,111 @@ class Chatbot:
     @logger(is_timed=True)
     def __init__(
         self,
-        config,
-        conversation_id=None,
-        parent_id=None,
+        config: dict[str, str],
+        conversation_id: str | None = None,
+        parent_id: str | None = None,
+        session_client=None,
+        lazy_loading: bool = False,
     ) -> None:
+        user_home = getenv("HOME")
+        if user_home is None:
+            self.cache_path = ".chatgpt_cache.json"
+        else:
+            # mkdir ~/.config/revChatGPT
+            if not osp.exists(osp.join(user_home, ".config")):
+                os.mkdir(osp.join(user_home, ".config"))
+            if not osp.exists(osp.join(user_home, ".config", "revChatGPT")):
+                os.mkdir(osp.join(user_home, ".config", "revChatGPT"))
+            self.cache_path = osp.join(user_home, ".config", "revChatGPT", "cache.json")
+
         self.config = config
-        self.session = requests.Session()
+        self.session = session_client() if session_client else requests.Session()
+        try:
+            cached_access_token = self.__get_cached_access_token(
+                self.config.get("email", None),
+            )
+        except Error as error:
+            if error.code == 5:
+                raise error
+            cached_access_token = None
+        if cached_access_token is not None:
+            self.config["access_token"] = cached_access_token
+
         if "proxy" in config:
-            if isinstance(config["proxy"], str) is False:
+            if not isinstance(config["proxy"], str):
                 raise Exception("Proxy must be a string!")
             proxies = {
                 "http": config["proxy"],
                 "https": config["proxy"],
             }
-            self.session.proxies.update(proxies)
+            if isinstance(self.session, AsyncClient):
+                self.session = AsyncClient(proxies=proxies)
+            else:
+                self.session.proxies.update(proxies)
         self.conversation_id = conversation_id
         self.parent_id = parent_id
         self.conversation_mapping = {}
         self.conversation_id_prev_queue = []
         self.parent_id_prev_queue = []
-        if "email" in config and "password" in config:
+        self.lazy_loading = lazy_loading
+
+        self.__check_credentials()
+
+    @logger(is_timed=True)
+    def __check_credentials(self):
+        if "access_token" in self.config:
+            self.__refresh_headers(self.config["access_token"])
+        elif "session_token" in self.config:
             pass
-        elif "access_token" in config:
-            self.__refresh_headers(config["access_token"])
-        elif "session_token" in config:
+        elif "email" in self.config and "password" in self.config:
             pass
         else:
-            raise Exception("No login details provided!")
-        if "access_token" not in config:
+            raise Exception("Insufficient login details provided!")
+        if "access_token" not in self.config:
             try:
                 self.__login()
             except AuthError as error:
                 raise error
 
+def web_acess(word):
+    try:
+      params = (
+          ('q', f'{word}'),
+          ('max_results', '6'),
+          ('region', 'br-pt'),
+      )
+
+      headers = {
+          'authority': 'ddg-webapp-aagd.vercel.app',
+          'accept': '*/*',
+          'accept-language': 'pt-BR,pt;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
+          'content-type': 'application/json',
+          'origin': 'https://chat.openai.com',
+          'sec-ch-ua': '"Chromium";v="110", "Not A(Brand";v="24", "Microsoft Edge";v="110"',
+          'sec-ch-ua-mobile': '?0',
+          'sec-ch-ua-platform': '"Windows"',
+          'sec-fetch-dest': 'empty',
+          'sec-fetch-mode': 'cors',
+          'sec-fetch-site': 'cross-site',
+          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36 Edg/110.0.1587.50',
+      }
+      response = requests.get('https://ddg-webapp-aagd.vercel.app/search', headers=headers, params=params)
+      json_data = response.json()
+
+      Result_ = ""
+      i = 1
+      for result in json_data:        
+          #Result_ += "\"" + result["title"] + "\"" + "\n"
+          Result_ +=  f"[{i}]\"" + result["body"] + "\"" + "\n"
+          Result_ += "URL: " + result["href"] + "\n\n"
+          i += 1
+    except Exception as e:
+      return ":("
+      pass    
+    return Result_
+
     @logger(is_timed=False)
-    def __refresh_headers(self, access_token):
+    def __refresh_headers(self, access_token: str):
         self.session.headers.clear()
         self.session.headers.update(
             {
@@ -134,14 +213,79 @@ class Chatbot:
                 "Referer": "https://chat.openai.com/chat",
             },
         )
+        self.config["access_token"] = access_token
+
+        email = self.config.get("email", None)
+        if email is not None:
+            self.__cache_access_token(email, access_token)
+
+    @logger(is_timed=False)
+    def __get_cached_access_token(self, email: str | None) -> str | None:
+        email = email or "default"
+        cache = self.__read_cache()
+        access_token = cache.get("access_tokens", {}).get(email, None)
+
+        # Parse access_token as JWT
+        if access_token is not None:
+            try:
+                # Split access_token into 3 parts
+                s_access_token = access_token.split(".")
+                # Add padding to the middle part
+                s_access_token[1] += "=" * ((4 - len(s_access_token[1]) % 4) % 4)
+                d_access_token = base64.b64decode(s_access_token[1])
+                d_access_token = json.loads(d_access_token)
+            except base64.binascii.Error:
+                raise Error(
+                    source="__get_cached_access_token",
+                    message="Invalid access token",
+                    code=5,
+                ) from None
+            except json.JSONDecodeError:
+                raise Error(
+                    source="__get_cached_access_token",
+                    message="Invalid access token",
+                    code=5,
+                ) from None
+
+            exp = d_access_token.get("exp", None)
+            if exp is not None and exp < time.time():
+                raise Error(
+                    source="__get_cached_access_token",
+                    message="Access token expired",
+                    code=4,
+                )
+
+        return access_token
+
+    @logger(is_timed=False)
+    def __cache_access_token(self, email: str, access_token: str) -> None:
+        email = email or "default"
+        cache = self.__read_cache()
+        if "access_tokens" not in cache:
+            cache["access_tokens"] = {}
+        cache["access_tokens"][email] = access_token
+        self.__write_cache(cache)
+
+    @logger(is_timed=False)
+    def __write_cache(self, info: dict):
+        os.makedirs(osp.dirname(self.cache_path), exist_ok=True)
+        json.dump(info, open(self.cache_path, "w", encoding="utf-8"), indent=4)
+
+    @logger(is_timed=False)
+    def __read_cache(self):
+        try:
+            cached = json.load(open(self.cache_path, encoding="utf-8"))
+        except (FileNotFoundError, json.decoder.JSONDecodeError):
+            cached = {}
+        return cached
 
     @logger(is_timed=True)
     def __login(self):
         if (
             "email" not in self.config or "password" not in self.config
         ) and "session_token" not in self.config:
-            log.error("No login details provided!")
-            raise Exception("No login details provided!")
+            log.error("Insufficient login details provided!")
+            raise Exception("Insufficient login details provided!")
         auth = Authenticator(
             email_address=self.config.get("email"),
             password=self.config.get("password"),
@@ -156,7 +300,7 @@ class Chatbot:
                 self.__login()
                 return
         else:
-            log.debug("Using authentiator to get access token")
+            log.debug("Using authenticator to get access token")
             auth.begin()
             self.config["session_token"] = auth.session_token
             auth.get_access_token()
@@ -166,56 +310,64 @@ class Chatbot:
     @logger(is_timed=True)
     def ask(
         self,
-        prompt,
-        conversation_id=None,
-        parent_id=None,
-        timeout=360,
-        # gen_title=True,
+        prompt: str,
+        conversation_id: str | None = None,
+        parent_id: str | None = None,
+        timeout: float = 360,
     ):
         """
         Ask a question to the chatbot
         :param prompt: String
         :param conversation_id: UUID
         :param parent_id: UUID
-        :param gen_title: Boolean
+        :param timeout: Float. Unit is second
         """
         if parent_id is not None and conversation_id is None:
             log.error("conversation_id must be set once parent_id is set")
-            error = Error()
-            error.source = "User"
-            error.message = "conversation_id must be set once parent_id is set"
-            error.code = -1
-            raise error
-            # user-specified covid and parid, check skipped to avoid rate limit
+            raise Error("User", "conversation_id must be set once parent_id is set", -1)
 
-        if (
-            conversation_id is not None and conversation_id != self.conversation_id
-        ):  # Update to new conversations
+        if conversation_id is not None and conversation_id != self.conversation_id:
             log.debug("Updating to new conversation by setting parent_id to None")
-            self.parent_id = None  # Resetting parent_id
+            self.parent_id = None
 
         conversation_id = conversation_id or self.conversation_id
         parent_id = parent_id or self.parent_id
-        if conversation_id is None and parent_id is None:  # new conversation
+        if conversation_id is None and parent_id is None:
             parent_id = str(uuid.uuid4())
             log.debug("New conversation, setting parent_id to new UUID4: %s", parent_id)
 
         if conversation_id is not None and parent_id is None:
             if conversation_id not in self.conversation_mapping:
-                # Use lazy % formatting in logging functionspylint(logging-fstring-interpolation)
+                if self.lazy_loading:
+                    log.debug(
+                        "Conversation ID %s not found in conversation mapping, try to get conversation history for the given ID",
+                        conversation_id,
+                    )
+                    try:
+                        history = self.get_msg_history(conversation_id)
+                        self.conversation_mapping[conversation_id] = history[
+                            "current_node"
+                        ]
+                    except Exception as error:
+                        pass
+                else:
+                    log.debug(
+                        "Conversation ID %s not found in conversation mapping, mapping conversations",
+                        conversation_id,
+                    )
 
+                    self.__map_conversations()
+
+            if conversation_id in self.conversation_mapping:
                 log.debug(
-                    "Conversation ID %s not found in conversation mapping, mapping conversations",
+                    "Conversation ID %s found in conversation mapping, setting parent_id to %s",
                     conversation_id,
+                    self.conversation_mapping[conversation_id],
                 )
-
-                self.__map_conversations()
-            log.debug(
-                "Conversation ID %s found in conversation mapping, setting parent_id to %s",
-                conversation_id,
-                self.conversation_mapping[conversation_id],
-            )
-            parent_id = self.conversation_mapping[conversation_id]
+                parent_id = self.conversation_mapping[conversation_id]
+            else:  # invalid conversation_id provided, treat as a new conversation
+                conversation_id = None
+                parent_id = str(uuid.uuid4())
         data = {
             "action": "next",
             "messages": [
@@ -233,10 +385,10 @@ class Chatbot:
         }
         log.debug("Sending the payload")
         log.debug(json.dumps(data, indent=2))
-        # new_conv = data["conversation_id"] is None
+
         self.conversation_id_prev_queue.append(
             data["conversation_id"],
-        )  # for rollback
+        )
         self.parent_id_prev_queue.append(data["parent_message_id"])
         response = self.session.post(
             url=BASE_URL + "api/conversation",
@@ -257,29 +409,40 @@ class Chatbot:
             if line == "[DONE]":
                 break
 
-            # Replace accidentally escaped double quotes
             line = line.replace('\\"', '"')
             line = line.replace("\\'", "'")
             line = line.replace("\\\\", "\\")
-            # Try parse JSON
+
             try:
                 line = json.loads(line)
             except json.decoder.JSONDecodeError:
-                log.info("Error parsing JSON")
                 continue
             if not self.__check_fields(line):
                 log.error("Field missing", exc_info=True)
                 if (
-                    line.get("details")
+                    line.get("detail")
                     == "Too many requests in 1 hour. Try again later."
                 ):
                     log.error("Rate limit exceeded")
-                    raise Error(source="ask", message=line.get("details"), code=2)
-                raise Error(source="ask", message="Field missing", code=1)
+                    raise Error(source="ask", message=line.get("detail"), code=2)
+                if line.get("detail", {}).get("code") == "invalid_api_key":
+                    log.error("Invalid access token")
+                    raise Error(
+                        source="ask",
+                        message=line.get("detail", {}).get("message"),
+                        code=3,
+                    )
 
+                raise Error(source="ask", message="Field missing", code=1)
             message = line["message"]["content"]["parts"][0]
+            if message == prompt:
+                continue
             conversation_id = line["conversation_id"]
             parent_id = line["message"]["id"]
+            try:
+                model = line["message"]["metadata"]["model_slug"]
+            except KeyError:
+                model = None
             log.debug("Received message: %s", message)
             log.debug("Received conversation_id: %s", conversation_id)
             log.debug("Received parent_id: %s", parent_id)
@@ -287,6 +450,7 @@ class Chatbot:
                 "message": message,
                 "conversation_id": conversation_id,
                 "parent_id": parent_id,
+                "model": model,
             }
         self.conversation_mapping[conversation_id] = parent_id
         if parent_id is not None:
@@ -306,17 +470,17 @@ class Chatbot:
 
     @logger(is_timed=False)
     def __check_response(self, response):
-        # response.encoding = response.apparent_encoding
         if response.status_code != 200:
             print(response.text)
-            error = Error()
-            error.source = "OpenAI"
-            error.code = response.status_code
-            error.message = response.text
-            raise error
+            raise Error("OpenAI", response.status_code, response.text)
 
     @logger(is_timed=True)
-    def get_conversations(self, offset=0, limit=20):
+    def get_conversations(
+        self,
+        offset: int = 0,
+        limit: int = 20,
+        encoding: str | None = None,
+    ):
         """
         Get conversations
         :param offset: Integer
@@ -325,11 +489,13 @@ class Chatbot:
         url = BASE_URL + f"api/conversations?offset={offset}&limit={limit}"
         response = self.session.get(url)
         self.__check_response(response)
+        if encoding is not None:
+            response.encoding = encoding
         data = json.loads(response.text)
         return data["items"]
 
     @logger(is_timed=True)
-    def get_msg_history(self, convo_id, encoding=None):
+    def get_msg_history(self, convo_id: str, encoding: str | None = None):
         """
         Get message history
         :param id: UUID of conversation
@@ -344,13 +510,12 @@ class Chatbot:
         return data
 
     @logger(is_timed=True)
-    def gen_title(self, convo_id, message_id):
+    def gen_title(self, convo_id: str, message_id: str):
         """
         Generate title for conversation
         """
-        url = BASE_URL + f"api/conversation/gen_title/{convo_id}"
         response = self.session.post(
-            url,
+            BASE_URL + f"api/conversation/gen_title/{convo_id}",
             data=json.dumps(
                 {"message_id": message_id, "model": "text-davinci-002-render"},
             ),
@@ -358,7 +523,7 @@ class Chatbot:
         self.__check_response(response)
 
     @logger(is_timed=True)
-    def change_title(self, convo_id, title):
+    def change_title(self, convo_id: str, title: str):
         """
         Change title of conversation
         :param id: UUID of conversation
@@ -369,7 +534,7 @@ class Chatbot:
         self.__check_response(response)
 
     @logger(is_timed=True)
-    def delete_conversation(self, convo_id):
+    def delete_conversation(self, convo_id: str):
         """
         Delete conversation
         :param id: UUID of conversation
@@ -404,11 +569,11 @@ class Chatbot:
         self.conversation_id = None
         self.parent_id = str(uuid.uuid4())
 
-    @logger
-    def rollback_conversation(self, num=1) -> None:
+    @logger(is_timed=False)
+    def rollback_conversation(self, num: int = 1) -> None:
         """
         Rollback the conversation.
-        :param num: The number of messages to rollback
+        :param num: Integer. The number of messages to rollback
         :return: None
         """
         for _ in range(num):
@@ -416,28 +581,214 @@ class Chatbot:
             self.parent_id = self.parent_id_prev_queue.pop()
 
 
+class AsyncChatbot(Chatbot):
+    """
+    Async Chatbot class for ChatGPT
+    """
+
+    def __init__(
+        self,
+        config,
+        conversation_id=None,
+        parent_id=None,
+    ) -> None:
+        super().__init__(
+            config=config,
+            conversation_id=conversation_id,
+            parent_id=parent_id,
+            session_client=AsyncClient,
+        )
+
+    async def ask(
+        self,
+        prompt,
+        conversation_id=None,
+        parent_id=None,
+        timeout=360,
+    ):
+        """
+        Ask a question to the chatbot
+        """
+        if parent_id is not None and conversation_id is None:
+            raise Error("User", "conversation_id must be set once parent_id is set", 1)
+
+        if conversation_id is not None and conversation_id != self.conversation_id:
+            self.parent_id = None
+
+        conversation_id = conversation_id or self.conversation_id
+        parent_id = parent_id or self.parent_id
+        if conversation_id is None and parent_id is None:
+            parent_id = str(uuid.uuid4())
+
+        if conversation_id is not None and parent_id is None:
+            if conversation_id not in self.conversation_mapping:
+                await self.__map_conversations()
+            parent_id = self.conversation_mapping[conversation_id]
+        data = {
+            "action": "next",
+            "messages": [
+                {
+                    "id": str(uuid.uuid4()),
+                    "role": "user",
+                    "content": {"content_type": "text", "parts": [prompt]},
+                },
+            ],
+            "conversation_id": conversation_id,
+            "parent_message_id": parent_id,
+            "model": "text-davinci-002-render-sha"
+            if not self.config.get("paid")
+            else "text-davinci-002-render-paid",
+        }
+
+        self.conversation_id_prev_queue.append(
+            data["conversation_id"],
+        )
+        self.parent_id_prev_queue.append(data["parent_message_id"])
+
+        async with self.session.stream(
+            method="POST",
+            url=BASE_URL + "api/conversation",
+            data=json.dumps(data),
+            timeout=timeout,
+        ) as response:
+            self.__check_response(response)
+            async for line in response.aiter_lines():
+                if line == "" or line is None:
+                    continue
+                if "data: " in line:
+                    line = line[6:]
+                if "[DONE]" in line:
+                    break
+
+                try:
+                    line = json.loads(line)
+                except json.decoder.JSONDecodeError:
+                    continue
+                if not self.__check_fields(line):
+                    raise Exception("Field missing. Details: " + str(line))
+
+                message = line["message"]["content"]["parts"][0]
+                conversation_id = line["conversation_id"]
+                parent_id = line["message"]["id"]
+                model = (
+                    line["message"]["metadata"]["model_slug"]
+                    if "model_slug" in line["message"]["metadata"]
+                    else None
+                )
+                yield {
+                    "message": message,
+                    "conversation_id": conversation_id,
+                    "parent_id": parent_id,
+                    "model": model,
+                }
+            self.conversation_mapping[conversation_id] = parent_id
+            if parent_id is not None:
+                self.parent_id = parent_id
+            if conversation_id is not None:
+                self.conversation_id = conversation_id
+
+    async def get_conversations(self, offset=0, limit=20):
+        """
+        Get conversations
+        :param offset: Integer
+        :param limit: Integer
+        """
+        url = BASE_URL + f"api/conversations?offset={offset}&limit={limit}"
+        response = await self.session.get(url)
+        self.__check_response(response)
+        data = json.loads(response.text)
+        return data["items"]
+
+    async def get_msg_history(self, convo_id, encoding="utf-8"):
+        """
+        Get message history
+        :param id: UUID of conversation
+        """
+        url = BASE_URL + f"api/conversation/{convo_id}"
+        response = await self.session.get(url)
+        if encoding is not None:
+            response.encoding = encoding
+            self.__check_response(response)
+            data = json.loads(response.text)
+            return data
+
+    async def gen_title(self, convo_id, message_id):
+        """
+        Generate title for conversation
+        """
+        url = BASE_URL + f"api/conversation/gen_title/{convo_id}"
+        response = await self.session.post(
+            url,
+            data=json.dumps(
+                {"message_id": message_id, "model": "text-davinci-002-render"},
+            ),
+        )
+        await self.__check_response(response)
+
+    async def change_title(self, convo_id, title):
+        """
+        Change title of conversation
+        :param convo_id: UUID of conversation
+        :param title: String
+        """
+        url = BASE_URL + f"api/conversation/{convo_id}"
+        response = await self.session.patch(url, data=f'{{"title": "{title}"}}')
+        self.__check_response(response)
+
+    async def delete_conversation(self, convo_id):
+        """
+        Delete conversation
+        :param convo_id: UUID of conversation
+        """
+        url = BASE_URL + f"api/conversation/{convo_id}"
+        response = await self.session.patch(url, data='{"is_visible": false}')
+        self.__check_response(response)
+
+    async def clear_conversations(self):
+        """
+        Delete all conversations
+        """
+        url = BASE_URL + "api/conversations"
+        response = await self.session.patch(url, data='{"is_visible": false}')
+        self.__check_response(response)
+
+    async def __map_conversations(self):
+        conversations = await self.get_conversations()
+        histories = [await self.get_msg_history(x["id"]) for x in conversations]
+        for x, y in zip(conversations, histories):
+            self.conversation_mapping[x["id"]] = y["current_node"]
+
+    def __check_fields(self, data: dict) -> bool:
+        try:
+            data["message"]["content"]
+        except TypeError:
+            return False
+        except KeyError:
+            return False
+        return True
+
+    def __check_response(self, response):
+        response.raise_for_status()
+
+
 @logger(is_timed=False)
 def get_input(prompt):
     """
     Multiline input function.
     """
-    # Display the prompt
+
     print(prompt, end="")
 
-    # Initialize an empty list to store the input lines
     lines = []
 
-    # Read lines of input until the user enters an empty line
     while True:
         line = input()
         if line == "":
             break
         lines.append(line)
 
-    # Join the lines, separated by newlines, and store the result
     user_input = "\n".join(lines)
 
-    # Return the input
     return user_input
 
 
@@ -454,7 +805,7 @@ def configure():
     if user_home:
         config_files.append(f"{user_home}/.config/revChatGPT/config.json")
 
-    config_file = next((f for f in config_files if exists(f)), None)
+    config_file = next((f for f in config_files if osp.exists(f)), None)
     if config_file:
         with open(config_file, encoding="utf-8") as f:
             config = json.load(f)
@@ -465,72 +816,77 @@ def configure():
 
 
 @logger(is_timed=False)
-def main(config):
+def main(config: dict):
+    """
+    Main function for the chatGPT program.
+    """
     print("Logging in...")
     chatbot = Chatbot(
-        args.email,
-        args.password,
-        paid=args.paid,
-        proxy=args.proxy,
-        insecure=args.insecure_auth,
-        session_token=args.session_token,
+        config,
+        conversation_id=config.get("conversation_id"),
+        parent_id=config.get("parent_id"),
     )
+
+    def handle_commands(command: str) -> bool:
+        if command == "!help":
+            print(
+                """
+            !help - Show this message
+            !reset - Forget the current conversation
+            !config - Show the current configuration
+            !rollback x - Rollback the conversation (x being the number of messages to rollback)
+            !exit - Exit this program
+            !setconversation - Changes the conversation
+            """,
+            )
+        elif command == "!reset":
+            chatbot.reset_chat()
+            print("Chat session successfully reset.")
+        elif command == "!config":
+            print(json.dumps(chatbot.config, indent=4))
+        elif command.startswith("!rollback"):
+            try:
+                rollback = int(command.split(" ")[1])
+            except IndexError:
+                logging.exception(
+                    "No number specified, rolling back 1 message",
+                    stack_info=True,
+                )
+                rollback = 1
+            chatbot.rollback_conversation(rollback)
+            print(f"Rolled back {rollback} messages.")
+        elif command.startswith("!setconversation"):
+            try:
+                chatbot.conversation_id = chatbot.config[
+                    "conversation_id"
+                ] = command.split(" ")[1]
+                print("Conversation has been changed")
+            except IndexError:
+                log.exception(
+                    "Please include conversation UUID in command",
+                    stack_info=True,
+                )
+                print("Please include conversation UUID in command")
+        elif command == "!exit":
+            exit(0)
+        else:
+            return False
+        return True
+
     while True:
         prompt = get_input("\nYou:\n")
         if prompt.startswith("!"):
-            if prompt == "!help":
-                print(
-                    """
-                !help - Show this message
-                !reset - Forget the current conversation
-                !refresh - Refresh the session authentication
-                !config - Show the current configuration
-                !rollback x - Rollback the conversation (x being the number of messages to rollback)
-                !exit - Exit this program
-                """,
-                )
+            if handle_commands(prompt):
                 continue
-            elif prompt == "!reset":
-                chatbot.reset_chat()
-                print("Chat session successfully reset.")
-                continue
-            elif prompt == "!refresh":
-                chatbot.__refresh_session()
-                print("Session successfully refreshed.\n")
-                continue
-            elif prompt == "!config":
-                print(json.dumps(chatbot.config, indent=4))
-                continue
-            elif prompt.startswith("!rollback"):
-                # Default to 1 rollback if no number is specified
-                try:
-                    rollback = int(prompt.split(" ")[1])
-                except IndexError:
-                    rollback = 1
-                chatbot.rollback_conversation(rollback)
-                print(f"Rolled back {rollback} messages.")
-                continue
-            elif prompt.startswith("!setconversation"):
-                try:
-                    chatbot.config["conversation"] = prompt.split(" ")[1]
-                    print("Conversation has been changed")
-                except IndexError:
-                    print("Please include conversation UUID in command")
-                continue
-            elif prompt == "!exit":
-                break
-        try:
-            print("Chatbot: ")
-            message = chatbot.ask(
-                prompt,
-                conversation_id=chatbot.config.get("conversation"),
-                parent_id=chatbot.config.get("parent_id"),
-            )
-            print(message["message"])
-        except Exception as exc:
-            print("Something went wrong!")
-            print(exc)
-            continue
+
+        print("Chatbot: ")
+        prev_text = ""
+        for data in chatbot.ask(prompt):
+            message = data["message"][len(prev_text) :]
+            print(message, end="", flush=True)
+            prev_text = data["message"]
+        print()
+
 
 if __name__ == "__main__":
     print(
@@ -540,5 +896,5 @@ if __name__ == "__main__":
         """,
     )
     print("Type '!help' to show a full list of commands")
-    print("Press enter twice to submit your question.\n")
+    print("Press enter TWICE to submit your question.\n")
     main(configure())
