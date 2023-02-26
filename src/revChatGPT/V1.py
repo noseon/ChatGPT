@@ -162,43 +162,6 @@ class Chatbot:
             except AuthError as error:
                 raise error
 
-def web_acess(word):
-    try:
-      params = (
-          ('q', f'{word}'),
-          ('max_results', '6'),
-          ('region', 'br-pt'),
-      )
-
-      headers = {
-          'authority': 'ddg-webapp-aagd.vercel.app',
-          'accept': '*/*',
-          'accept-language': 'pt-BR,pt;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
-          'content-type': 'application/json',
-          'origin': 'https://chat.openai.com',
-          'sec-ch-ua': '"Chromium";v="110", "Not A(Brand";v="24", "Microsoft Edge";v="110"',
-          'sec-ch-ua-mobile': '?0',
-          'sec-ch-ua-platform': '"Windows"',
-          'sec-fetch-dest': 'empty',
-          'sec-fetch-mode': 'cors',
-          'sec-fetch-site': 'cross-site',
-          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36 Edg/110.0.1587.50',
-      }
-      response = requests.get('https://ddg-webapp-aagd.vercel.app/search', headers=headers, params=params)
-      json_data = response.json()
-
-      Result_ = ""
-      i = 1
-      for result in json_data:        
-          #Result_ += "\"" + result["title"] + "\"" + "\n"
-          Result_ +=  f"[{i}]\"" + result["body"] + "\"" + "\n"
-          Result_ += "URL: " + result["href"] + "\n\n"
-          i += 1
-    except Exception as e:
-      return ":("
-      pass    
-    return Result_
-
     @logger(is_timed=False)
     def __refresh_headers(self, access_token: str):
         self.session.headers.clear()
@@ -473,6 +436,44 @@ def web_acess(word):
         if response.status_code != 200:
             print(response.text)
             raise Error("OpenAI", response.status_code, response.text)
+
+    @logger(is_timed=True)
+    def web_acess(word):
+        try:
+            params = (
+                ('q', f'{word}'),
+                ('max_results', '6'),
+                ('region', 'br-pt'),
+            )
+
+            headers = {
+                'authority': 'ddg-webapp-aagd.vercel.app',
+                'accept': '*/*',
+                'accept-language': 'pt-BR,pt;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
+                'content-type': 'application/json',
+                'origin': 'https://chat.openai.com',
+                'sec-ch-ua': '"Chromium";v="110", "Not A(Brand";v="24", "Microsoft Edge";v="110"',
+                'sec-ch-ua-mobile': '?0',
+                'sec-ch-ua-platform': '"Windows"',
+                'sec-fetch-dest': 'empty',
+                'sec-fetch-mode': 'cors',
+                'sec-fetch-site': 'cross-site',
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36 Edg/110.0.1587.50',
+          }
+            response = requests.get('https://ddg-webapp-aagd.vercel.app/search', headers=headers, params=params)
+            json_data = response.json()
+
+            Result_ = ""
+            i = 1
+            for result in json_data:        
+                #Result_ += "\"" + result["title"] + "\"" + "\n"
+                Result_ +=  f"[{i}]\"" + result["body"] + "\"" + "\n"
+                Result_ += "URL: " + result["href"] + "\n\n"
+                i += 1
+        except Exception as e:
+            return ":("
+            pass    
+        return Result_
 
     @logger(is_timed=True)
     def get_conversations(
