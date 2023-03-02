@@ -19,6 +19,9 @@ from httpx import AsyncClient
 from OpenAIAuth import Authenticator
 from OpenAIAuth import Error as AuthError
 
+from .utils import create_session
+from .utils import get_input
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(funcName)s - %(message)s",
 )
@@ -27,8 +30,13 @@ log = logging.getLogger(__name__)
 
 
 def logger(is_timed: bool):
-    """
-    Logger decorator
+    """Logger decorator
+
+    Args:
+        is_timed (bool): Whether to include function running time in exit log
+
+    Returns:
+        _type_: decorated function
     """
 
     def decorator(func):
@@ -75,6 +83,7 @@ class Error(Exception):
     3: Invalid request error
     4: Expired access token error
     5: Invalid access token error
+    6: Prohibited concurrent query error
     """
 
     source: str
@@ -85,7 +94,37 @@ class Error(Exception):
         self.source = source
         self.message = message
         self.code = code
-        # Code
+
+
+class colors:
+    """
+    Colors for printing
+    """
+
+    HEADER = "\033[95m"
+    OKBLUE = "\033[94m"
+    OKCYAN = "\033[96m"
+    OKGREEN = "\033[92m"
+    WARNING = "\033[93m"
+    FAIL = "\033[91m"
+    ENDC = "\033[0m"
+    BOLD = "\033[1m"
+    UNDERLINE = "\033[4m"
+
+    def __init__(self) -> None:
+        if getenv("NO_COLOR"):
+            self.HEADER = ""
+            self.OKBLUE = ""
+            self.OKCYAN = ""
+            self.OKGREEN = ""
+            self.WARNING = ""
+            self.FAIL = ""
+            self.ENDC = ""
+            self.BOLD = ""
+            self.UNDERLINE = ""
+
+
+bcolors = colors()
 
 
 class Chatbot:
@@ -102,9 +141,29 @@ class Chatbot:
         session_client=None,
         lazy_loading: bool = False,
     ) -> None:
+        """Initialize a chatbot
+
+        Args:
+            config (dict[str, str]): Login and proxy info. Example:
+                {
+                    "email": "OpenAI account email",
+                    "password": "OpenAI account password",
+                    "session_token": "<session_token>"
+                    "access_token": "<access_token>"
+                    "proxy": "<proxy_url_string>",
+                    "paid": True/False, # whether this is a plus account
+                }
+                More details on these are available at https://github.com/acheong08/ChatGPT#configuration
+            conversation_id (str | None, optional): Id of the conversation to continue on. Defaults to None.
+            parent_id (str | None, optional): Id of the previous response message to continue on. Defaults to None.
+            session_client (_type_, optional): _description_. Defaults to None.
+
+        Raises:
+            Exception: _description_
+        """
         user_home = getenv("HOME")
         if user_home is None:
-            self.cache_path = ".chatgpt_cache.json"
+            self.cache_path = osp.join(os.getcwd(), ".chatgpt_cache.json")
         else:
             # mkdir ~/.config/revChatGPT
             if not osp.exists(osp.join(user_home, ".config")):
@@ -148,8 +207,19 @@ class Chatbot:
 
     @logger(is_timed=True)
     def __check_credentials(self):
+        """Check login info and perform login
+
+        Any one of the following is sufficient for login. Multiple login info can be provided at the same time and they will be used in the order listed below.
+            - access_token
+            - session_token
+            - email + password
+
+        Raises:
+            Exception: _description_
+            AuthError: _description_
+        """
         if "access_token" in self.config:
-            self.__refresh_headers(self.config["access_token"])
+            self.__set_access_token(self.config["access_token"])
         elif "session_token" in self.config:
             pass
         elif "email" in self.config and "password" in self.config:
@@ -163,7 +233,12 @@ class Chatbot:
                 raise error
 
     @logger(is_timed=False)
-    def __refresh_headers(self, access_token: str):
+    def __set_access_token(self, access_token: str):
+        """Set access token in request header and self.config, then cache it to file.
+
+        Args:
+            access_token (str): access_token
+        """
         self.session.headers.clear()
         self.session.headers.update(
             {
@@ -176,6 +251,7 @@ class Chatbot:
                 "Referer": "https://chat.openai.com/chat",
             },
         )
+
         self.config["access_token"] = access_token
 
         email = self.config.get("email", None)
@@ -184,6 +260,19 @@ class Chatbot:
 
     @logger(is_timed=False)
     def __get_cached_access_token(self, email: str | None) -> str | None:
+        """Read access token from cache
+
+        Args:
+            email (str | None): email of the account to get access token
+
+        Raises:
+            Error: _description_
+            Error: _description_
+            Error: _description_
+
+        Returns:
+            str | None: access token string or None if not found
+        """
         email = email or "default"
         cache = self.__read_cache()
         access_token = cache.get("access_tokens", {}).get(email, None)
@@ -222,6 +311,12 @@ class Chatbot:
 
     @logger(is_timed=False)
     def __cache_access_token(self, email: str, access_token: str) -> None:
+        """Write an access token to cache
+
+        Args:
+            email (str): account email
+            access_token (str): account access token
+        """
         email = email or "default"
         cache = self.__read_cache()
         if "access_tokens" not in cache:
@@ -231,7 +326,16 @@ class Chatbot:
 
     @logger(is_timed=False)
     def __write_cache(self, info: dict):
-        os.makedirs(osp.dirname(self.cache_path), exist_ok=True)
+        """Write cache info to file
+
+        Args:
+            info (dict): cache info, current format
+            {
+                "access_tokens":{"someone@example.com": 'this account's access token', }
+            }
+        """
+        dirname = osp.dirname(self.cache_path) or "."
+        os.makedirs(dirname, exist_ok=True)
         json.dump(info, open(self.cache_path, "w", encoding="utf-8"), indent=4)
 
     @logger(is_timed=False)
@@ -268,7 +372,7 @@ class Chatbot:
             self.config["session_token"] = auth.session_token
             auth.get_access_token()
 
-        self.__refresh_headers(auth.access_token)
+        self.__set_access_token(auth.access_token)
 
     @logger(is_timed=True)
     def ask(
@@ -278,16 +382,31 @@ class Chatbot:
         parent_id: str | None = None,
         timeout: float = 360,
     ):
+        """Ask a question to the chatbot
+        Args:
+            prompt (str): The question
+            conversation_id (str | None, optional): UUID for the conversation to continue on. Defaults to None.
+            parent_id (str | None, optional): UUID for the message to continue on. Defaults to None.
+            timeout (float, optional): Timeout for getting the full response, unit is second. Defaults to 360.
+
+        Raises:
+            Error: _description_
+            Exception: _description_
+            Error: _description_
+            Error: _description_
+            Error: _description_
+
+        Yields:
+            _type_: _description_
         """
-        Ask a question to the chatbot
-        :param prompt: String
-        :param conversation_id: UUID
-        :param parent_id: UUID
-        :param timeout: Float. Unit is second
-        """
+
         if parent_id is not None and conversation_id is None:
             log.error("conversation_id must be set once parent_id is set")
-            raise Error("User", "conversation_id must be set once parent_id is set", -1)
+            raise Error(
+                source="User",
+                message="conversation_id must be set once parent_id is set",
+                code=-1,
+            )
 
         if conversation_id is not None and conversation_id != self.conversation_id:
             log.debug("Updating to new conversation by setting parent_id to None")
@@ -311,7 +430,7 @@ class Chatbot:
                         self.conversation_mapping[conversation_id] = history[
                             "current_node"
                         ]
-                    except Exception as error:
+                    except Exception:
                         pass
                 else:
                     log.debug(
@@ -388,12 +507,24 @@ class Chatbot:
                 ):
                     log.error("Rate limit exceeded")
                     raise Error(source="ask", message=line.get("detail"), code=2)
-                if line.get("detail", {}).get("code") == "invalid_api_key":
+                if line.get("detail").startswith(
+                    "Only one message at a time.",
+                ):
+                    log.error("Prohibited concurrent query")
+                    raise Error(source="ask", message=line.get("detail"), code=6)
+                if line.get("detail", "") == "invalid_api_key":
                     log.error("Invalid access token")
                     raise Error(
                         source="ask",
-                        message=line.get("detail", {}).get("message"),
+                        message=line.get("detail", ""),
                         code=3,
+                    )
+                if line.get("detail", "") == "invalid_token":
+                    log.error("Invalid access token")
+                    raise Error(
+                        source="ask",
+                        message=line.get("detail", ""),
+                        code=5,
                     )
 
                 raise Error(source="ask", message="Field missing", code=1)
@@ -433,47 +564,21 @@ class Chatbot:
 
     @logger(is_timed=False)
     def __check_response(self, response):
+        """Make sure response is success
+
+        Args:
+            response (_type_): _description_
+
+        Raises:
+            Error: _description_
+        """
         if response.status_code != 200:
             print(response.text)
-            raise Error("OpenAI", response.status_code, response.text)
-
-    @logger(is_timed=True)
-    def web_acess(word):
-        try:
-            params = (
-                ('q', f'{word}'),
-                ('max_results', '6'),
-                ('region', 'br-pt'),
+            raise Error(
+                source="OpenAI",
+                message=response.text,
+                code=response.status_code,
             )
-
-            headers = {
-                'authority': 'ddg-webapp-aagd.vercel.app',
-                'accept': '*/*',
-                'accept-language': 'pt-BR,pt;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
-                'content-type': 'application/json',
-                'origin': 'https://chat.openai.com',
-                'sec-ch-ua': '"Chromium";v="110", "Not A(Brand";v="24", "Microsoft Edge";v="110"',
-                'sec-ch-ua-mobile': '?0',
-                'sec-ch-ua-platform': '"Windows"',
-                'sec-fetch-dest': 'empty',
-                'sec-fetch-mode': 'cors',
-                'sec-fetch-site': 'cross-site',
-                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36 Edg/110.0.1587.50',
-          }
-            response = requests.get('https://ddg-webapp-aagd.vercel.app/search', headers=headers, params=params)
-            json_data = response.json()
-
-            Result_ = ""
-            i = 1
-            for result in json_data:        
-                #Result_ += "\"" + result["title"] + "\"" + "\n"
-                Result_ +=  f"[{i}]\"" + result["body"] + "\"" + "\n"
-                Result_ += "URL: " + result["href"] + "\n\n"
-                i += 1
-        except Exception as e:
-            return ":("
-            pass    
-        return Result_
 
     @logger(is_timed=True)
     def get_conversations(
@@ -611,7 +716,11 @@ class AsyncChatbot(Chatbot):
         Ask a question to the chatbot
         """
         if parent_id is not None and conversation_id is None:
-            raise Error("User", "conversation_id must be set once parent_id is set", 1)
+            raise Error(
+                source="User",
+                message="conversation_id must be set once parent_id is set",
+                code=1,
+            )
 
         if conversation_id is not None and conversation_id != self.conversation_id:
             self.parent_id = None
@@ -772,25 +881,7 @@ class AsyncChatbot(Chatbot):
         response.raise_for_status()
 
 
-@logger(is_timed=False)
-def get_input(prompt):
-    """
-    Multiline input function.
-    """
-
-    print(prompt, end="")
-
-    lines = []
-
-    while True:
-        line = input()
-        if line == "":
-            break
-        lines.append(line)
-
-    user_input = "\n".join(lines)
-
-    return user_input
+get_input = logger(is_timed=False)(get_input)
 
 
 @logger(is_timed=False)
@@ -874,19 +965,30 @@ def main(config: dict):
             return False
         return True
 
-    while True:
-        prompt = get_input("\nYou:\n")
-        if prompt.startswith("!"):
-            if handle_commands(prompt):
-                continue
-
-        print("Chatbot: ")
-        prev_text = ""
-        for data in chatbot.ask(prompt):
-            message = data["message"][len(prev_text) :]
-            print(message, end="", flush=True)
-            prev_text = data["message"]
-        print()
+    session = create_session()
+    print()
+    try:
+        while True:
+            print(bcolors.OKBLUE + bcolors.BOLD + "You:" + bcolors.ENDC)
+            prompt = get_input(session=session)
+            if prompt.startswith("!"):
+                if handle_commands(prompt):
+                    continue
+            print()
+            print(bcolors.OKGREEN + bcolors.BOLD + "Chatbot: ")
+            prev_text = ""
+            for data in chatbot.ask(prompt):
+                message = data["message"][len(prev_text) :]
+                print(message, end="", flush=True)
+                prev_text = data["message"]
+            print(bcolors.ENDC)
+            print()
+    except KeyboardInterrupt:
+        print("Exiting...")
+        exit(0)
+    except EOFError:
+        print("Exiting...")
+        exit(0)
 
 
 if __name__ == "__main__":
@@ -897,5 +999,10 @@ if __name__ == "__main__":
         """,
     )
     print("Type '!help' to show a full list of commands")
-    print("Press enter TWICE to submit your question.\n")
+    print(
+        bcolors.BOLD
+        + bcolors.WARNING
+        + "Press Esc followed by Enter or Alt+Enter to send a message."
+        + bcolors.ENDC,
+    )
     main(configure())
