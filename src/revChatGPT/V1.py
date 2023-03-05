@@ -4,24 +4,24 @@ Standard ChatGPT
 from __future__ import annotations
 
 import base64
-import contextlib
 import json
 import logging
 import os
 import os.path as osp
-import sys
 import time
 import uuid
 from functools import wraps
-from os import environ, getenv
-from typing import NoReturn
+from os import environ
+from os import getenv
 
 import requests
 from httpx import AsyncClient
 from OpenAIAuth import Authenticator
 from OpenAIAuth import Error as AuthError
 
-from .utils import create_completer, create_session, get_input
+from .utils import create_completer
+from .utils import create_session
+from .utils import get_input
 
 if __name__ == "__main__":
     logging.basicConfig(
@@ -104,15 +104,15 @@ class Error(Exception):
     message: str
     code: int
 
-    def __init__(self, source: str, message: str, code: int = 0) -> None:
+    def __init__(self, source: str, message: str, code: int = 0):
         self.source = source
         self.message = message
         self.code = code
 
-    def __str__(self) -> str:
+    def __str__(self):
         return f"{self.source}: {self.message} (code: {self.code})"
 
-    def __repr__(self) -> str:
+    def __repr__(self):
         return f"{self.source}: {self.message} (code: {self.code})"
 
 
@@ -226,7 +226,7 @@ class Chatbot:
         self.__check_credentials()
 
     @logger(is_timed=True)
-    def __check_credentials(self) -> None:
+    def __check_credentials(self):
         """Check login info and perform login
 
         Any one of the following is sufficient for login. Multiple login info can be provided at the same time and they will be used in the order listed below.
@@ -251,7 +251,7 @@ class Chatbot:
                 raise error
 
     @logger(is_timed=False)
-    def __set_access_token(self, access_token: str) -> None:
+    def __set_access_token(self, access_token: str):
         """Set access token in request header and self.config, then cache it to file.
 
         Args:
@@ -343,7 +343,7 @@ class Chatbot:
         self.__write_cache(cache)
 
     @logger(is_timed=False)
-    def __write_cache(self, info: dict) -> None:
+    def __write_cache(self, info: dict):
         """Write cache info to file
 
         Args:
@@ -365,7 +365,7 @@ class Chatbot:
         return cached
 
     @logger(is_timed=True)
-    def __login(self) -> None:
+    def __login(self):
         if (
             "email" not in self.config or "password" not in self.config
         ) and "session_token" not in self.config:
@@ -443,11 +443,13 @@ class Chatbot:
                         "Conversation ID %s not found in conversation mapping, try to get conversation history for the given ID",
                         conversation_id,
                     )
-                    with contextlib.suppress(Exception):
+                    try:
                         history = self.get_msg_history(conversation_id)
                         self.conversation_mapping[conversation_id] = history[
                             "current_node"
                         ]
+                    except Exception:
+                        pass
                 else:
                     log.debug(
                         "Conversation ID %s not found in conversation mapping, mapping conversations",
@@ -477,9 +479,9 @@ class Chatbot:
             ],
             "conversation_id": conversation_id,
             "parent_message_id": parent_id,
-            "model": "text-davinci-002-render-paid"
-            if self.config.get("paid")
-            else "text-davinci-002-render-sha",
+            "model": "text-davinci-002-render-sha"
+            if not self.config.get("paid")
+            else "text-davinci-002-render-paid",
         }
         log.debug("Sending the payload")
         log.debug(json.dumps(data, indent=2))
@@ -489,7 +491,7 @@ class Chatbot:
         )
         self.parent_id_prev_queue.append(data["parent_message_id"])
         response = self.session.post(
-            url=f"{BASE_URL}api/conversation",
+            url=BASE_URL + "api/conversation",
             data=json.dumps(data),
             timeout=timeout,
             stream=True,
@@ -601,7 +603,7 @@ class Chatbot:
         return True
 
     @logger(is_timed=False)
-    def __check_response(self, response: requests.Response) -> None:
+    def __check_response(self, response):
         """Make sure response is success
 
         Args:
@@ -653,7 +655,7 @@ class Chatbot:
         return json.loads(response.text)
 
     @logger(is_timed=True)
-    def gen_title(self, convo_id: str, message_id: str) -> None:
+    def gen_title(self, convo_id: str, message_id: str):
         """
         Generate title for conversation
         """
@@ -666,7 +668,7 @@ class Chatbot:
         self.__check_response(response)
 
     @logger(is_timed=True)
-    def change_title(self, convo_id: str, title: str) -> None:
+    def change_title(self, convo_id: str, title: str):
         """
         Change title of conversation
         :param id: UUID of conversation
@@ -677,7 +679,7 @@ class Chatbot:
         self.__check_response(response)
 
     @logger(is_timed=True)
-    def delete_conversation(self, convo_id: str) -> None:
+    def delete_conversation(self, convo_id: str):
         """
         Delete conversation
         :param id: UUID of conversation
@@ -687,7 +689,7 @@ class Chatbot:
         self.__check_response(response)
 
     @logger(is_timed=True)
-    def clear_conversations(self) -> None:
+    def clear_conversations(self):
         """
         Delete all conversations
         """
@@ -696,7 +698,7 @@ class Chatbot:
         self.__check_response(response)
 
     @logger(is_timed=False)
-    def __map_conversations(self) -> None:
+    def __map_conversations(self):
         conversations = self.get_conversations()
         histories = [self.get_msg_history(x["id"]) for x in conversations]
         for x, y in zip(conversations, histories):
@@ -858,7 +860,7 @@ class AsyncChatbot(Chatbot):
             self.__check_response(response)
             return json.loads(response.text)
 
-    async def gen_title(self, convo_id: str, message_id: str) -> None:
+    async def gen_title(self, convo_id, message_id):
         """
         Generate title for conversation
         """
@@ -871,7 +873,7 @@ class AsyncChatbot(Chatbot):
         )
         await self.__check_response(response)
 
-    async def change_title(self, convo_id: str, title: str) -> None:
+    async def change_title(self, convo_id, title):
         """
         Change title of conversation
         :param convo_id: UUID of conversation
@@ -881,7 +883,7 @@ class AsyncChatbot(Chatbot):
         response = await self.session.patch(url, data=f'{{"title": "{title}"}}')
         self.__check_response(response)
 
-    async def delete_conversation(self, convo_id: str) -> None:
+    async def delete_conversation(self, convo_id):
         """
         Delete conversation
         :param convo_id: UUID of conversation
@@ -890,7 +892,7 @@ class AsyncChatbot(Chatbot):
         response = await self.session.patch(url, data='{"is_visible": false}')
         self.__check_response(response)
 
-    async def clear_conversations(self) -> None:
+    async def clear_conversations(self):
         """
         Delete all conversations
         """
@@ -898,7 +900,7 @@ class AsyncChatbot(Chatbot):
         response = await self.session.patch(url, data='{"is_visible": false}')
         self.__check_response(response)
 
-    async def __map_conversations(self) -> None:
+    async def __map_conversations(self):
         conversations = await self.get_conversations()
         histories = [await self.get_msg_history(x["id"]) for x in conversations]
         for x, y in zip(conversations, histories):
@@ -911,7 +913,7 @@ class AsyncChatbot(Chatbot):
             return False
         return True
 
-    def __check_response(self, response) -> None:
+    def __check_response(self, response):
         response.raise_for_status()
 
 
@@ -924,12 +926,15 @@ def configure():
     Looks for a config file in the following locations:
     """
     config_files = ["config.json"]
-    if xdg_config_home := getenv("XDG_CONFIG_HOME"):
+    xdg_config_home = getenv("XDG_CONFIG_HOME")
+    if xdg_config_home:
         config_files.append(f"{xdg_config_home}/revChatGPT/config.json")
-    if user_home := getenv("HOME"):
+    user_home = getenv("HOME")
+    if user_home:
         config_files.append(f"{user_home}/.config/revChatGPT/config.json")
 
-    if config_file := next((f for f in config_files if osp.exists(f)), None):
+    config_file = next((f for f in config_files if osp.exists(f)), None)
+    if config_file:
         with open(config_file, encoding="utf-8") as f:
             config = json.load(f)
     else:
@@ -939,7 +944,7 @@ def configure():
 
 
 @logger(is_timed=False)
-def main(config: dict) -> NoReturn:
+def main(config: dict):
     """
     Main function for the chatGPT program.
     """
@@ -991,7 +996,7 @@ def main(config: dict) -> NoReturn:
                 )
                 print("Please include conversation UUID in command")
         elif command == "!exit":
-            sys.exit(0)
+            exit(0)
         else:
             return False
         return True
@@ -1006,8 +1011,9 @@ def main(config: dict) -> NoReturn:
             print(f"{bcolors.OKBLUE + bcolors.BOLD}You: {bcolors.ENDC}", end="")
 
             prompt = get_input(session=session, completer=completer)
-            if prompt.startswith("!") and handle_commands(prompt):
-                continue
+            if prompt.startswith("!"):
+                if handle_commands(prompt):
+                    continue
 
             print()
             print(f"{bcolors.OKGREEN + bcolors.BOLD}Chatbot: {bcolors.ENDC}", end="")
@@ -1020,7 +1026,7 @@ def main(config: dict) -> NoReturn:
             print()
     except (KeyboardInterrupt, EOFError):
         print("Exiting...")
-        sys.exit(0)
+        exit(0)
 
 
 if __name__ == "__main__":

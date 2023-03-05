@@ -7,24 +7,26 @@ from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.history import InMemoryHistory
 
 
-def create_session() -> PromptSession:
+def create_session():
     return PromptSession(history=InMemoryHistory())
 
 
-def create_completer(commands: list, pattern_str: str = "$") -> WordCompleter:
-    return WordCompleter(words=commands, pattern=re.compile(pattern_str))
+def create_completer(commands: list, pattern_str: str = "$"):
+    completer = WordCompleter(words=commands, pattern=re.compile(pattern_str))
+    return completer
 
 
-def get_input(session: PromptSession = None, completer: WordCompleter = None) -> str:
+def get_input(session: PromptSession = None, completer: WordCompleter = None):
     """
     Multiline input function.
     """
-    return (
-        session.prompt(
+    if session:
+        user_input = session.prompt(
             completer=completer,
             multiline=True,
             auto_suggest=AutoSuggestFromHistory(),
         )
-        if session
-        else prompt(multiline=True)
-    )
+    else:
+        user_input = prompt(multiline=True)
+
+    return user_input

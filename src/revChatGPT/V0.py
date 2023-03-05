@@ -6,7 +6,6 @@ import json
 import os
 import sys
 from datetime import date
-from typing import LiteralString, NoReturn
 
 import openai
 import tiktoken
@@ -23,7 +22,7 @@ def get_max_tokens(prompt: str) -> int:
     return 4000 - len(ENCODER.encode(prompt))
 
 
-def remove_suffix(input_string: str, suffix: str) -> str:
+def remove_suffix(input_string, suffix):
     """
     Remove suffix from string (Support for Python 3.8)
     """
@@ -381,7 +380,7 @@ class Conversation:
             self.conversations = json.loads(f.read())
 
 
-def main() -> NoReturn:
+def main():
     print(
         """
     ChatGPT - GPT-3 Chatbot
@@ -391,7 +390,7 @@ def main() -> NoReturn:
     print("Type '!help' to show a full list of commands")
     print("Press enter twice to submit your question.\n")
 
-    def get_input(prompt) -> LiteralString:
+    def get_input(prompt):
         """
         Multi-line input function
         """
